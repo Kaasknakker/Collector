@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="nl">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
+<title>Collector 0.1</title>
+<style>
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#6fc5df;font-family:system-ui,-apple-system,sans-serif;touch-action:none;user-select:none}
+#game{position:fixed;inset:0;width:100%;height:100%}.hud{position:fixed;top:max(12px,env(safe-area-inset-top));left:12px;right:12px;display:flex;justify-content:space-between;z-index:5;pointer-events:none}
+.pill{background:#fffde;backdrop-filter:blur(10px);padding:9px 13px;border-radius:18px;font-weight:800;box-shadow:0 3px 12px #0002}.bottom{position:fixed;left:10px;right:10px;bottom:max(10px,env(safe-area-inset-bottom));z-index:6;display:grid;grid-template-columns:1fr 1fr;gap:8px}
+button{border:0;border-radius:18px;padding:13px 8px;font:700 13px system-ui;background:#fff;box-shadow:0 4px 14px #0003;touch-action:none}button.action{grid-column:1/-1;background:#f3b83f;font-size:16px;min-height:52px}.small{font-size:11px;font-weight:600;opacity:.65}
+#hint{position:fixed;top:64px;left:50%;transform:translateX(-50%);background:#173c48dc;color:white;padding:8px 12px;border-radius:15px;font-size:13px;z-index:5;white-space:nowrap;pointer-events:none}
+</style></head>
+<body><canvas id="game"></canvas><div class="hud"><div class="pill">💰 <span id="money">0</span></div><div class="pill">🏖️ <span id="land">0</span> m²</div></div><div id="hint">Sleep het voertuig naar de zandvoorraad</div>
+<div class="bottom"><button id="speed">⚡ Load Speed L1<br><span class="small">€20</span></button><button id="capacity">📦 Capacity L1<br><span class="small">€25</span></button><button class="action" id="action">RIJD NAAR HET ZAND</button></div>
+<script>
+(function(){
+var c=document.getElementById('game'),x=c.getContext('2d'),W=0,H=0,dpr=1;
+var car={x:0,y:0,r:23,load:0,cap:10}, money=0, land=0, speedLv=1,capLv=1,drag=false,ox=0,oy=0,holding=false,holdStart=0,mode='';
+var sand={x:0,y:0,r:58}, cells=[], action=document.getElementById('action'), hint=document.getElementById('hint');
+function resize(){dpr=Math.min(window.devicePixelRatio||1,2);W=innerWidth;H=innerHeight;c.width=W*dpr;c.height=H*dpr;c.style.width=W+'px';c.style.height=H+'px';x.setTransform(dpr,0,0,dpr,0,0);sand.x=W*.22;sand.y=H*.30;if(!car.x){car.x=W*.5;car.y=H*.55} draw()}
+addEventListener('resize',resize);
+function dist(a,b,cx,cy){var dx=a-cx,dy=b-cy;return Math.sqrt(dx*dx+dy*dy)}
+function nearSand(){return dist(car.x,car.y,sand.x,sand.y)<sand.r+car.r+15}
+function cellAt(px,py){for(var i=0;i<cells.length;i++)if(dist(px,py,cells[i].x,cells[i].y)<32)return cells[i];return null}
+function updateUI(){document.getElementById('money').textContent=money;document.getElementById('land').textContent=land;document.getElementById('speed').innerHTML='⚡ Load Speed L'+speedLv+'<br><span class="small">€'+(20*speedLv)+'</span>';document.getElementById('capacity').innerHTML='📦 Capacity L'+capLv+'<br><span class="small">€'+(25*capLv)+'</span>';
+if(nearSand()&&car.load<car.cap){mode='load';action.textContent='HOLD TO LOAD · '+Math.floor(car.load)+'/'+car.cap;hint.textContent='Houd LOAD vast om zand te laden'}
+else if(car.load>0){mode='dump';action.textContent='HOLD TO DUMP · '+Math.floor(car.load)+'/'+car.cap;hint.textContent='Rijd het water in en stort waar jij land wilt'}
+else{mode='';action.textContent='RIJD NAAR HET ZAND';hint.textContent='Sleep het voertuig naar de zandvoorraad'}}
+function draw(){x.clearRect(0,0,W,H);x.fillStyle='#6fc5df';x.fillRect(0,0,W,H);
+x.fillStyle='#e7c06b';x.beginPath();x.arc(sand.x,sand.y,sand.r,0,Math.PI*2);x.fill();x.fillStyle='#7a5b28';x.font='700 12px system-ui';x.textAlign='center';x.fillText('ZAND',sand.x,sand.y+4);
+for(var i=0;i<cells.length;i++){var q=cells[i];x.fillStyle=q.v>=3?'#7fa75b':q.v>=2?'#d9b85f':'#edd17c';x.beginPath();x.arc(q.x,q.y,28+Math.min(q.v,3)*2,0,Math.PI*2);x.fill()}
+x.save();x.translate(car.x,car.y);x.fillStyle='#e8a329';x.fillRect(-25,-17,50,34);x.fillStyle='#333';x.fillRect(-18,-22,22,12);x.fillStyle='#222';x.beginPath();x.arc(-17,20,8,0,7);x.arc(17,20,8,0,7);x.fill();x.fillStyle='#fff';x.font='bold 11px system-ui';x.textAlign='center';x.fillText(Math.floor(car.load)+'/'+car.cap,0,4);x.restore();requestAnimationFrame(draw)}
+function point(e){var r=c.getBoundingClientRect(),p=e.touches?e.touches[0]:e;return{x:p.clientX-r.left,y:p.clientY-r.top}}
+c.addEventListener('pointerdown',function(e){var p=point(e);if(dist(p.x,p.y,car.x,car.y)<45){drag=true;ox=p.x-car.x;oy=p.y-car.y;c.setPointerCapture&&c.setPointerCapture(e.pointerId)}});
+c.addEventListener('pointermove',function(e){if(!drag)return;var p=point(e);car.x=Math.max(25,Math.min(W-25,p.x-ox));car.y=Math.max(85,Math.min(H-150,p.y-oy));updateUI()});
+c.addEventListener('pointerup',function(){drag=false;updateUI()});
+function startHold(e){e.preventDefault();if(!mode)return;holding=true;holdStart=performance.now();tickHold()}
+function stopHold(){holding=false}
+function tickHold(){if(!holding)return;var elapsed=(performance.now()-holdStart)/1000;if(mode==='load'&&nearSand()){var rate=car.cap/(5/Math.pow(1.55,speedLv-1));car.load=Math.min(car.cap,car.load+rate*.05);if(car.load>=car.cap)holding=false}
+else if(mode==='dump'&&car.load>0){var rate=car.cap/2.5,amt=Math.min(car.load,rate*.05);car.load-=amt;var q=cellAt(car.x,car.y);if(!q){q={x:car.x,y:car.y,v:0};cells.push(q)}q.v+=amt/car.cap*3;if(q.v>=1&&q.counted!==true){q.counted=true;land+=10;money+=12}}
+updateUI();if(holding)setTimeout(tickHold,50)}
+action.addEventListener('pointerdown',startHold);action.addEventListener('pointerup',stopHold);action.addEventListener('pointercancel',stopHold);
+document.getElementById('speed').onclick=function(){var cost=20*speedLv;if(money>=cost){money-=cost;speedLv++;updateUI()}};
+document.getElementById('capacity').onclick=function(){var cost=25*capLv;if(money>=cost){money-=cost;capLv++;car.cap+=5;updateUI()}};
+resize();updateUI();draw();
+})();
+</script></body></html>
