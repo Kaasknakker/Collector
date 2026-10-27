@@ -1,47 +1,57 @@
 <!doctype html>
-<html lang="nl">
-<head>
-<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
-<title>Collector 0.1</title>
-<style>
-*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#6fc5df;font-family:system-ui,-apple-system,sans-serif;touch-action:none;user-select:none}
-#game{position:fixed;inset:0;width:100%;height:100%}.hud{position:fixed;top:max(12px,env(safe-area-inset-top));left:12px;right:12px;display:flex;justify-content:space-between;z-index:5;pointer-events:none}
-.pill{background:#fffde;backdrop-filter:blur(10px);padding:9px 13px;border-radius:18px;font-weight:800;box-shadow:0 3px 12px #0002}.bottom{position:fixed;left:10px;right:10px;bottom:max(10px,env(safe-area-inset-bottom));z-index:6;display:grid;grid-template-columns:1fr 1fr;gap:8px}
-button{border:0;border-radius:18px;padding:13px 8px;font:700 13px system-ui;background:#fff;box-shadow:0 4px 14px #0003;touch-action:none}button.action{grid-column:1/-1;background:#f3b83f;font-size:16px;min-height:52px}.small{font-size:11px;font-weight:600;opacity:.65}
-#hint{position:fixed;top:64px;left:50%;transform:translateX(-50%);background:#173c48dc;color:white;padding:8px 12px;border-radius:15px;font-size:13px;z-index:5;white-space:nowrap;pointer-events:none}
-</style></head>
-<body><canvas id="game"></canvas><div class="hud"><div class="pill">💰 <span id="money">0</span></div><div class="pill">🏖️ <span id="land">0</span> m²</div></div><div id="hint">Sleep het voertuig naar de zandvoorraad</div>
-<div class="bottom"><button id="speed">⚡ Load Speed L1<br><span class="small">€20</span></button><button id="capacity">📦 Capacity L1<br><span class="small">€25</span></button><button class="action" id="action">RIJD NAAR HET ZAND</button></div>
+<html lang="nl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
+<title>Collector 0.2 — Polder</title><style>
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#64b9d2;font-family:system-ui,-apple-system,sans-serif;touch-action:none;user-select:none}canvas{position:fixed;inset:0;width:100%;height:100%}
+.hud{position:fixed;top:max(10px,env(safe-area-inset-top));left:10px;right:10px;display:flex;gap:7px;z-index:3;pointer-events:none}.pill{background:#ffffffe8;padding:8px 11px;border-radius:16px;font-weight:800;font-size:13px;box-shadow:0 3px 12px #0002}.pill:last-child{margin-left:auto}
+#msg{position:fixed;top:58px;left:50%;transform:translateX(-50%);max-width:88%;text-align:center;background:#173c48e8;color:#fff;padding:8px 12px;border-radius:14px;font-size:13px;font-weight:650;z-index:3;pointer-events:none}
+.bottom{position:fixed;left:10px;right:10px;bottom:max(10px,env(safe-area-inset-bottom));display:grid;grid-template-columns:1fr 1fr;gap:8px;z-index:4}button{border:0;border-radius:17px;padding:11px 7px;background:#fff;font:750 13px system-ui;box-shadow:0 4px 14px #0003}.small{font-size:10px;opacity:.62}
+</style></head><body><canvas id="g"></canvas>
+<div class="hud"><div class="pill">€ <span id="money">0</span></div><div class="pill">🌱 <span id="land">0</span> m²</div><div class="pill">⏳ <span id="sand">0</span>/<span id="cap">80</span></div></div>
+<div id="msg">Rijd naar het zanddepot</div>
+<div class="bottom"><button id="capBtn">📦 Capaciteit L1<br><span class="small">€120</span></button><button id="speedBtn">⚡ Laden L1<br><span class="small">€90</span></button></div>
 <script>
 (function(){
-var c=document.getElementById('game'),x=c.getContext('2d'),W=0,H=0,dpr=1;
-var car={x:0,y:0,r:23,load:0,cap:10}, money=0, land=0, speedLv=1,capLv=1,drag=false,ox=0,oy=0,holding=false,holdStart=0,mode='';
-var sand={x:0,y:0,r:58}, cells=[], action=document.getElementById('action'), hint=document.getElementById('hint');
-function resize(){dpr=Math.min(window.devicePixelRatio||1,2);W=innerWidth;H=innerHeight;c.width=W*dpr;c.height=H*dpr;c.style.width=W+'px';c.style.height=H+'px';x.setTransform(dpr,0,0,dpr,0,0);sand.x=W*.22;sand.y=H*.30;if(!car.x){car.x=W*.5;car.y=H*.55} draw()}
-addEventListener('resize',resize);
-function dist(a,b,cx,cy){var dx=a-cx,dy=b-cy;return Math.sqrt(dx*dx+dy*dy)}
-function nearSand(){return dist(car.x,car.y,sand.x,sand.y)<sand.r+car.r+15}
-function cellAt(px,py){for(var i=0;i<cells.length;i++)if(dist(px,py,cells[i].x,cells[i].y)<32)return cells[i];return null}
-function updateUI(){document.getElementById('money').textContent=money;document.getElementById('land').textContent=land;document.getElementById('speed').innerHTML='⚡ Load Speed L'+speedLv+'<br><span class="small">€'+(20*speedLv)+'</span>';document.getElementById('capacity').innerHTML='📦 Capacity L'+capLv+'<br><span class="small">€'+(25*capLv)+'</span>';
-if(nearSand()&&car.load<car.cap){mode='load';action.textContent='HOLD TO LOAD · '+Math.floor(car.load)+'/'+car.cap;hint.textContent='Houd LOAD vast om zand te laden'}
-else if(car.load>0){mode='dump';action.textContent='HOLD TO DUMP · '+Math.floor(car.load)+'/'+car.cap;hint.textContent='Rijd het water in en stort waar jij land wilt'}
-else{mode='';action.textContent='RIJD NAAR HET ZAND';hint.textContent='Sleep het voertuig naar de zandvoorraad'}}
-function draw(){x.clearRect(0,0,W,H);x.fillStyle='#6fc5df';x.fillRect(0,0,W,H);
-x.fillStyle='#e7c06b';x.beginPath();x.arc(sand.x,sand.y,sand.r,0,Math.PI*2);x.fill();x.fillStyle='#7a5b28';x.font='700 12px system-ui';x.textAlign='center';x.fillText('ZAND',sand.x,sand.y+4);
-for(var i=0;i<cells.length;i++){var q=cells[i];x.fillStyle=q.v>=3?'#7fa75b':q.v>=2?'#d9b85f':'#edd17c';x.beginPath();x.arc(q.x,q.y,28+Math.min(q.v,3)*2,0,Math.PI*2);x.fill()}
-x.save();x.translate(car.x,car.y);x.fillStyle='#e8a329';x.fillRect(-25,-17,50,34);x.fillStyle='#333';x.fillRect(-18,-22,22,12);x.fillStyle='#222';x.beginPath();x.arc(-17,20,8,0,7);x.arc(17,20,8,0,7);x.fill();x.fillStyle='#fff';x.font='bold 11px system-ui';x.textAlign='center';x.fillText(Math.floor(car.load)+'/'+car.cap,0,4);x.restore();requestAnimationFrame(draw)}
-function point(e){var r=c.getBoundingClientRect(),p=e.touches?e.touches[0]:e;return{x:p.clientX-r.left,y:p.clientY-r.top}}
-c.addEventListener('pointerdown',function(e){var p=point(e);if(dist(p.x,p.y,car.x,car.y)<45){drag=true;ox=p.x-car.x;oy=p.y-car.y;c.setPointerCapture&&c.setPointerCapture(e.pointerId)}});
-c.addEventListener('pointermove',function(e){if(!drag)return;var p=point(e);car.x=Math.max(25,Math.min(W-25,p.x-ox));car.y=Math.max(85,Math.min(H-150,p.y-oy));updateUI()});
-c.addEventListener('pointerup',function(){drag=false;updateUI()});
-function startHold(e){e.preventDefault();if(!mode)return;holding=true;holdStart=performance.now();tickHold()}
-function stopHold(){holding=false}
-function tickHold(){if(!holding)return;var elapsed=(performance.now()-holdStart)/1000;if(mode==='load'&&nearSand()){var rate=car.cap/(5/Math.pow(1.55,speedLv-1));car.load=Math.min(car.cap,car.load+rate*.05);if(car.load>=car.cap)holding=false}
-else if(mode==='dump'&&car.load>0){var rate=car.cap/2.5,amt=Math.min(car.load,rate*.05);car.load-=amt;var q=cellAt(car.x,car.y);if(!q){q={x:car.x,y:car.y,v:0};cells.push(q)}q.v+=amt/car.cap*3;if(q.v>=1&&q.counted!==true){q.counted=true;land+=10;money+=12}}
-updateUI();if(holding)setTimeout(tickHold,50)}
-action.addEventListener('pointerdown',startHold);action.addEventListener('pointerup',stopHold);action.addEventListener('pointercancel',stopHold);
-document.getElementById('speed').onclick=function(){var cost=20*speedLv;if(money>=cost){money-=cost;speedLv++;updateUI()}};
-document.getElementById('capacity').onclick=function(){var cost=25*capLv;if(money>=cost){money-=cost;capLv++;car.cap+=5;updateUI()}};
-resize();updateUI();draw();
+var cv=document.getElementById('g'),ctx=cv.getContext('2d'),W,H,D=1,coastY,drag=false,last=null;
+var car={x:0,y:0,r:20,sand:0,cap:80,loading:false}, depot={x:0,y:0,r:42};
+var dikes=[],polders=[],money=0,land=0,capLv=1,speedLv=1,loadStart=0,loadFrom=0,flash=null;
+var $=function(id){return document.getElementById(id)},msg=$('msg');
+function resize(){D=Math.min(devicePixelRatio||1,2);W=innerWidth;H=innerHeight;cv.width=W*D;cv.height=H*D;ctx.setTransform(D,0,0,D,0,0);coastY=H*.72;depot.x=W*.16;depot.y=coastY+35;if(!car.x){car.x=W*.32;car.y=coastY-5}}
+addEventListener('resize',resize);resize();
+function dist(a,b,c,d){var x=a-c,y=b-d;return Math.sqrt(x*x+y*y)}
+function nearDepot(){return dist(car.x,car.y,depot.x,depot.y)<depot.r+32}
+function ui(){ $('money').textContent=Math.floor(money);$('land').textContent=Math.floor(land);$('sand').textContent=Math.floor(car.sand);$('cap').textContent=car.cap;
+$('capBtn').innerHTML='📦 Capaciteit L'+capLv+'<br><span class="small">€'+(120*capLv)+'</span>';$('speedBtn').innerHTML='⚡ Laden L'+speedLv+'<br><span class="small">€'+(90*speedLv)+'</span>';
+if(car.loading)msg.textContent='Zand laden… '+Math.floor(car.sand)+'/'+car.cap;else if(car.sand>0)msg.textContent='Teken een dijk en sluit hem weer aan op de kust';else msg.textContent='Rijd naar het zanddepot voor een nieuwe lading'}
+function startLoad(){if(car.loading||car.sand>=car.cap)return;car.loading=true;loadStart=performance.now();loadFrom=car.sand}
+function updateLoad(){if(!car.loading)return;if(!nearDepot()){car.loading=false;return}var seconds=3.2/Math.pow(1.45,speedLv-1),p=Math.min(1,(performance.now()-loadStart)/1000/seconds);car.sand=loadFrom+(car.cap-loadFrom)*p;if(p>=1){car.sand=car.cap;car.loading=false;if(navigator.vibrate)navigator.vibrate(30)}ui()}
+function onCoast(p){return p.y>=coastY-13}
+function addDike(a,b){var len=dist(a.x,a.y,b.x,b.y);if(len<4||car.sand<=0)return;var use=Math.min(car.sand,len*.7),ratio=use/(len*.7);var end={x:a.x+(b.x-a.x)*ratio,y:a.y+(b.y-a.y)*ratio};dikes.push({a:{x:a.x,y:a.y},b:end});car.sand-=use;return end}
+function traceStart(){if(!last||onCoast(last))return null;for(var i=dikes.length-1;i>=0;i--)if(dist(last.x,last.y,dikes[i].b.x,dikes[i].b.y)<24)return i;return null}
+function closePolder(){
+if(dikes.length<2)return;var end=dikes[dikes.length-1].b;if(!onCoast(end))return;
+var pts=[dikes[dikes.length-1].b],i=dikes.length-1;while(i>=0){pts.unshift(dikes[i].a);if(onCoast(dikes[i].a))break;i--}if(i<0||pts.length<3)return;
+var a=pts[0],b=pts[pts.length-1];pts.push({x:b.x,y:coastY},{x:a.x,y:coastY});
+var area=0;for(var j=0;j<pts.length;j++){var k=(j+1)%pts.length;area+=pts[j].x*pts[k].y-pts[k].x*pts[j].y}area=Math.abs(area)/2;
+if(area<1800)return;var m2=Math.round(area/55),reward=Math.max(25,Math.round(m2*1.25));polders.push({pts:pts,created:performance.now(),m2:m2});land+=m2;money+=reward;flash={text:'+'+m2+' m²  ·  +€'+reward,t:performance.now()};if(navigator.vibrate)navigator.vibrate([35,45,70]);ui()}
+function point(e){var r=cv.getBoundingClientRect();return{x:e.clientX-r.left,y:e.clientY-r.top}}
+cv.addEventListener('pointerdown',function(e){var p=point(e);if(dist(p.x,p.y,car.x,car.y)<55){drag=true;last={x:car.x,y:car.y};cv.setPointerCapture&&cv.setPointerCapture(e.pointerId)}});
+cv.addEventListener('pointermove',function(e){if(!drag)return;var p=point(e),nx=Math.max(20,Math.min(W-20,p.x)),ny=Math.max(82,Math.min(H-95,p.y));var prev={x:car.x,y:car.y};car.x=nx;car.y=ny;
+if(car.sand>0&&prev.y<coastY+8&&ny<coastY+8){var end=addDike(prev,{x:nx,y:ny});if(end&&end.x!==nx){car.x=end.x;car.y=end.y}}
+last={x:car.x,y:car.y};if(nearDepot())startLoad();ui()});
+cv.addEventListener('pointerup',function(){if(!drag)return;drag=false;if(nearDepot())startLoad();closePolder();last=null;ui()});cv.addEventListener('pointercancel',function(){drag=false;last=null});
+$('capBtn').onclick=function(){var c=120*capLv;if(money>=c){money-=c;capLv++;car.cap+=35;ui()}};
+$('speedBtn').onclick=function(){var c=90*speedLv;if(money>=c){money-=c;speedLv++;ui()}};
+function path(poly){ctx.beginPath();ctx.moveTo(poly[0].x,poly[0].y);for(var i=1;i<poly.length;i++)ctx.lineTo(poly[i].x,poly[i].y);ctx.closePath()}
+function draw(){
+updateLoad();ctx.clearRect(0,0,W,H);ctx.fillStyle='#62bad4';ctx.fillRect(0,0,W,H);
+ctx.strokeStyle='#ffffff20';ctx.lineWidth=1;for(var y=100;y<coastY;y+=34){ctx.beginPath();for(var x=0;x<W;x+=20){ctx.lineTo(x,y+Math.sin((x+y)/35)*2)}ctx.stroke()}
+for(var i=0;i<polders.length;i++){var q=polders[i],p=Math.min(1,(performance.now()-q.created)/1800);path(q.pts);ctx.fillStyle=p<.45?'rgba(214,194,126,'+(p*.9)+')':'rgba(126,165,88,'+(.45+p*.45)+')';ctx.fill()}
+ctx.fillStyle='#88a85c';ctx.fillRect(0,coastY,W,H-coastY);ctx.fillStyle='#e0c36f';ctx.fillRect(0,coastY-8,W,10);
+ctx.strokeStyle='#d5b35d';ctx.lineWidth=13;ctx.lineCap='round';for(i=0;i<dikes.length;i++){ctx.beginPath();ctx.moveTo(dikes[i].a.x,dikes[i].a.y);ctx.lineTo(dikes[i].b.x,dikes[i].b.y);ctx.stroke()}
+ctx.fillStyle='#e7c06b';ctx.beginPath();ctx.arc(depot.x,depot.y,depot.r,0,Math.PI*2);ctx.fill();ctx.fillStyle='#6f5526';ctx.font='800 10px system-ui';ctx.textAlign='center';ctx.fillText('ZAND',depot.x,depot.y+3);
+ctx.save();ctx.translate(car.x,car.y);ctx.fillStyle='#e8a329';ctx.fillRect(-23,-15,46,30);ctx.fillStyle='#263238';ctx.fillRect(-14,-20,20,10);ctx.fillStyle='#222';ctx.beginPath();ctx.arc(-15,18,7,0,7);ctx.arc(15,18,7,0,7);ctx.fill();ctx.restore();
+if(flash&&performance.now()-flash.t<1800){var z=(performance.now()-flash.t)/1800;ctx.fillStyle='rgba(255,255,255,'+(1-z)+')';ctx.font='900 25px system-ui';ctx.textAlign='center';ctx.fillText(flash.text,W/2,H*.34-z*25)}
+requestAnimationFrame(draw)}
+ui();draw();
 })();
 </script></body></html>
