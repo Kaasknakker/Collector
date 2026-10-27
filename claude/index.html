@@ -1,0 +1,371 @@
+<!doctype html>
+<html lang="nl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
+<title>Collector 0.2</title>
+<style>
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{margin:0;height:100%;overflow:hidden;background:#3597bd;font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;touch-action:none;user-select:none;-webkit-user-select:none;-webkit-touch-callout:none}
+#game{position:fixed;left:0;top:0;width:100%;height:100%;display:block}
+.hud{position:fixed;top:max(10px,env(safe-area-inset-top));left:10px;right:10px;display:flex;justify-content:space-between;align-items:flex-start;gap:8px;pointer-events:none;z-index:5}
+.pill{background:rgba(255,255,255,.93);padding:7px 14px;border-radius:16px;font-weight:800;font-size:17px;color:#17313b;box-shadow:0 3px 10px rgba(0,0,0,.22);transition:transform .15s;min-width:92px}
+.pill small{display:block;font-weight:600;font-size:10px;opacity:.55;line-height:1.1;letter-spacing:.02em}
+.pill.pop{transform:scale(1.16)}
+#hint{position:fixed;left:50%;top:calc(max(10px,env(safe-area-inset-top)) + 62px);transform:translateX(-50%);max-width:88vw;text-align:center;background:rgba(23,49,59,.86);color:#fff;padding:8px 14px;border-radius:14px;font-size:14px;font-weight:600;z-index:5;pointer-events:none;transition:opacity .3s}
+#hint.off{opacity:0}
+#panel{position:fixed;left:0;right:0;bottom:0;z-index:6;display:flex;gap:10px;padding:10px 10px max(10px,env(safe-area-inset-bottom));background:#5b4a31;border-top:3px solid #3d3120}
+#panel button{flex:1;border:0;border-radius:14px;padding:9px 8px;background:#f1ead8;color:#2a2418;font:600 13px system-ui,-apple-system,sans-serif;display:flex;flex-direction:column;gap:2px;align-items:center;touch-action:manipulation;opacity:.55}
+#panel button b{font-size:15px}
+#panel button em{font-style:normal;font-weight:800;font-size:15px}
+#panel button.can{opacity:1;background:#ffd24a;box-shadow:0 0 0 3px rgba(255,210,74,.35)}
+#panel button.pulse{animation:pulse 1s infinite}
+@keyframes pulse{50%{transform:scale(1.04)}}
+#dbg{position:fixed;inset:0;z-index:20;background:rgba(10,20,26,.92);color:#e8f3f7;padding:18px;display:none;overflow:auto;font:13px/1.45 ui-monospace,Menlo,monospace}
+#dbg button{font:700 14px system-ui;margin:8px 8px 0 0;padding:10px 14px;border-radius:10px;border:0}
+</style>
+</head>
+<body>
+<canvas id="game"></canvas>
+<div class="hud">
+  <div class="pill" id="pMoney"><span id="money">€ 0</span><small id="ver">Collector 0.2</small></div>
+  <div class="pill" id="pLand"><span id="land">0 ha</span><small>land gewonnen</small></div>
+</div>
+<div id="hint"></div>
+<div id="panel"><button id="bCap"><b>Capaciteit</b><span>12 → 18 dijkstukken</span><em>€ 40</em></button><button id="bSpd"><b>Snelheid</b><span>×1.00 → ×1.22</span><em>€ 30</em></button></div>
+<div id="dbg"></div>
+<script>
+(function(){
+'use strict';
+
+/* ---------- constanten (hier tunen) ---------- */
+var SEA=0,LAND=1,DIKE=2,PUMP=3,POLDER=4,SAND=5;
+var START_CAP=12, CAP_STEP=6;        // dijkstukken per lading
+var LOAD_TIME=1.0;                   // seconden om vol te laden, onafhankelijk van capaciteit
+var BASE_SPEED=9, SPEED_GAIN=1.22;   // cellen per seconde, vermenigvuldiger per niveau
+var CELL_VALUE=4;                    // geld per drooggelegde cel
+var PUMP_DUR=3.0;                    // seconden droogmalen
+// kustlijn: [x-fractie, fractie van veldhoogte waar het land begint]
+var PROFILE=[[0,.76],[.03,.76],[.09,.52],[.14,.52],[.24,.74],[.30,.76],[.37,.48],[.42,.48],[.52,.72],[.60,.76],[.68,.55],[.73,.55],[.84,.74],[.94,.77],[1,.77]];
+
+/* ---------- DOM ---------- */
+var cv=document.getElementById('game'), cx=cv.getContext('2d');
+var panel=document.getElementById('panel'), bCap=document.getElementById('bCap'), bSpd=document.getElementById('bSpd');
+var elMoney=document.getElementById('money'), elLand=document.getElementById('land'), elHint=document.getElementById('hint');
+var pMoney=document.getElementById('pMoney'), pLand=document.getElementById('pLand'), dbg=document.getElementById('dbg');
+
+var W=0,H=0,dpr=1,fieldH=0,C=0,R=0,S=1,ox=0,oy=0;
+var type,born,pumpT0,pumpDelay,seaR,seaG,seaB,baseSea,tint;
+var seaCv=document.createElement('canvas');
+var G=null,last=0,started=false;
+var bank={c:0,r:0,rx:3,ry:2};
+var waves=[];
+
+/* ---------- hulpfuncties ---------- */
+function rng(a){return function(){a|=0;a=a+0x6D2B79F5|0;var t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296}}
+function lerp(a,b,t){return a+(b-a)*t}
+function clamp(v,a,b){return v<a?a:v>b?b:v}
+function mix(a,b,t){return 'rgb('+Math.round(lerp(a[0],b[0],t))+','+Math.round(lerp(a[1],b[1],t))+','+Math.round(lerp(a[2],b[2],t))+')'}
+function idx(x,y){var c=Math.floor(x),r=Math.floor(y);if(c<0||r<0||c>=C||r>=R)return -1;return r*C+c}
+function topRowF(c){var u=(c+.5)/C,P=PROFILE;for(var i=1;i<P.length;i++){if(u<=P[i][0]){var a=P[i-1],b=P[i],t=(u-a[0])/(b[0]-a[0]||1);t=(1-Math.cos(Math.PI*t))/2;return lerp(a[1],b[1],t)*R}}return P[P.length-1][1]*R}
+function cap(){return START_CAP+CAP_STEP*(G.capLv-1)}
+function speed(){return BASE_SPEED*Math.pow(SPEED_GAIN,G.spdLv-1)}
+function costCap(){return Math.round(40*Math.pow(1.7,G.capLv-1))}
+function costSpd(){return Math.round(30*Math.pow(1.7,G.spdLv-1))}
+function log(s){G.log.push({t:G.t,s:s})}
+
+/* ---------- wereld ---------- */
+function newGame(){
+  var N=C*R,i,c,r;
+  type=new Uint8Array(N);born=new Float32Array(N);pumpT0=new Float32Array(N);pumpDelay=new Float32Array(N);
+  seaR=new Uint8Array(N);seaG=new Uint8Array(N);seaB=new Uint8Array(N);baseSea=new Uint8Array(N);tint=new Array(N);
+  var rnd=rng(20261027),tops=[];
+  for(c=0;c<C;c++)tops[c]=Math.round(topRowF(c));
+  for(r=0;r<R;r++)for(c=0;c<C;c++){i=r*C+c;if(r>=tops[c])type[i]=LAND}
+  bank.rx=Math.max(3,Math.round(C*.09));bank.ry=Math.max(2,Math.round(R*.035));
+  bank.c=Math.round(C*.57);bank.r=Math.min(R-1-bank.ry,tops[bank.c]+bank.ry+1);
+  for(r=bank.r-bank.ry;r<=bank.r+bank.ry;r++)for(c=bank.c-bank.rx;c<=bank.c+bank.rx;c++){
+    if(r<0||c<0||r>=R||c>=C)continue;
+    var ex=(c-bank.c)/(bank.rx+.4),ey=(r-bank.r)/(bank.ry+.4);
+    if(ex*ex+ey*ey<=1&&type[r*C+c]===LAND)type[r*C+c]=SAND}
+  // diepte: afstand tot land bepaalt zeekleur
+  var dist=new Int16Array(N).fill(-1),q=[];
+  for(i=0;i<N;i++){if(type[i]!==SEA){dist[i]=0;q.push(i)}else baseSea[i]=1}
+  for(var h=0;h<q.length;h++){var j=q[h],jc=j%C,jr=(j/C)|0,nb=[];
+    if(jc>0)nb.push(j-1);if(jc<C-1)nb.push(j+1);if(jr>0)nb.push(j-C);if(jr<R-1)nb.push(j+C);
+    for(var k=0;k<nb.length;k++)if(dist[nb[k]]<0){dist[nb[k]]=dist[j]+1;q.push(nb[k])}}
+  for(i=0;i<N;i++){
+    var t=Math.min((dist[i]<0?30:dist[i])/28,1);
+    seaR[i]=Math.round(lerp(96,34,t));seaG[i]=Math.round(lerp(198,121,t));seaB[i]=Math.round(lerp(224,166,t));
+    var n=rnd()*2-1;tint[i]='rgb('+Math.round(143+n*10)+','+Math.round(190+n*10)+','+Math.round(96+n*8)+')'}
+  var startC=Math.max(1,bank.c-bank.rx-3);
+  G={t:0,money:0,landCells:0,capLv:1,spdLv:1,load:0,target:null,moving:false,
+     car:{x:startC+.5,y:bank.r+.5,a:-Math.PI/2},parts:[],texts:[],rings:[],pumps:[],foam:0,log:[],
+     stats:{firstLoad:-1,firstDike:-1,firstClose:-1,closures:0,dikeCells:0,upgrades:0,loadedFull:false},
+     shownMoney:-1,shownLand:-1,dikeDirty:false,laying:false,penT0:0};
+  waves=[];for(i=0;i<26;i++)waves.push({u:rnd(),v:rnd(),p:rnd()*6.28,s:.3+rnd()*.5});
+  log('nieuw spel');
+  updatePanel();updateHud(true);
+}
+
+/* ---------- opmaak ---------- */
+function layout(){
+  dpr=Math.min(window.devicePixelRatio||1,2);W=window.innerWidth;H=window.innerHeight;
+  cv.width=Math.round(W*dpr);cv.height=Math.round(H*dpr);cv.style.width=W+'px';cv.style.height=H+'px';cx.setTransform(dpr,0,0,dpr,0,0);
+  fieldH=H-panel.offsetHeight;
+  if(!type){var cell=Math.max(11,Math.round(Math.min(W,fieldH)/30));C=Math.floor(W/cell);R=Math.floor(fieldH/(W/C));newGame()}
+  S=Math.min(W/C,fieldH/R);ox=(W-C*S)/2;oy=fieldH-R*S;
+  buildSea();
+}
+function buildSea(){
+  seaCv.width=Math.round(W*dpr);seaCv.height=Math.round(H*dpr);
+  var s=seaCv.getContext('2d');s.setTransform(dpr,0,0,dpr,0,0);
+  s.fillStyle='rgb(34,121,166)';s.fillRect(0,0,W,H);
+  for(var r=0;r<R;r++)for(var c=0;c<C;c++){var i=r*C+c;if(!baseSea[i])continue;
+    s.fillStyle='rgb('+seaR[i]+','+seaG[i]+','+seaB[i]+')';s.fillRect(ox+c*S,oy+r*S,S+.6,S+.6)}
+  // rand boven en naast het veld
+  s.fillStyle='rgb(34,121,166)';
+}
+
+/* ---------- spel-logica ---------- */
+function visit(){
+  var g=G,car=g.car;
+  car.x=clamp(car.x,.05,C-.05);car.y=clamp(car.y,.05,R-.05);
+  var i=idx(car.x,car.y);if(i<0)return;
+  if(type[i]===SEA&&g.load>=1&&g.laying){
+    type[i]=DIKE;born[i]=g.t;g.load-=1;g.stats.dikeCells++;g.dikeDirty=true;
+    if(g.stats.firstDike<0){g.stats.firstDike=g.t;log('eerste dijkstuk')}
+    spawn('sand',car.x-Math.cos(car.a)*.8,car.y-Math.sin(car.a)*.8,(Math.random()-.5)*1.2,(Math.random()*.8)+.4,.45);
+    spawn('sand',car.x-Math.cos(car.a)*.8,car.y-Math.sin(car.a)*.8,(Math.random()-.5)*1.2,(Math.random()*.8)+.4,.45);
+  }
+}
+function spawn(k,x,y,vx,vy,l,col){if(G.parts.length>400)return;G.parts.push({k:k,x:x,y:y,vx:vx,vy:vy,l:l,m:l,c:col})}
+
+function checkEnclosure(){
+  var N=C*R,seen=new Uint8Array(N),st=[],i,c,r;
+  function push(j){if(type[j]===SEA&&!seen[j]){seen[j]=1;st.push(j)}}
+  for(c=0;c<C;c++){push(c);push((R-1)*C+c)}
+  for(r=0;r<R;r++){push(r*C);push(r*C+C-1)}
+  while(st.length){i=st.pop();c=i%C;r=(i/C)|0;if(c>0)push(i-1);if(c<C-1)push(i+1);if(r>0)push(i-C);if(r<R-1)push(i+C)}
+  var comp=new Uint8Array(N);
+  for(i=0;i<N;i++){
+    if(type[i]!==SEA||seen[i]||comp[i])continue;
+    var cells=[i],stack=[i];comp[i]=1;
+    while(stack.length){var j=stack.pop(),jc=j%C,jr=(j/C)|0,nb=[];
+      if(jc>0)nb.push(j-1);if(jc<C-1)nb.push(j+1);if(jr>0)nb.push(j-C);if(jr<R-1)nb.push(j+C);
+      for(var k=0;k<nb.length;k++){var m=nb[k];if(type[m]===SEA&&!seen[m]&&!comp[m]){comp[m]=1;cells.push(m);stack.push(m)}}}
+    closeRegion(cells);
+  }
+}
+function closeRegion(cells){
+  var g=G,n=cells.length,i,k,sx=0,sy=0,inSet={};
+  for(k=0;k<n;k++)inSet[cells[k]]=1;
+  // droogmaal-golf van de rand naar binnen
+  var d={},q=[];
+  for(k=0;k<n;k++){i=cells[k];var c=i%C,r=(i/C)|0;
+    var edge=(c>0&&!inSet[i-1])||(c<C-1&&!inSet[i+1])||(r>0&&!inSet[i-C])||(r<R-1&&!inSet[i+C]);
+    if(edge){d[i]=0;q.push(i)}}
+  for(var h=0;h<q.length;h++){var j=q[h],jc=j%C,jr=(j/C)|0,nb=[];
+    if(jc>0)nb.push(j-1);if(jc<C-1)nb.push(j+1);if(jr>0)nb.push(j-C);if(jr<R-1)nb.push(j+C);
+    for(k=0;k<nb.length;k++){var m=nb[k];if(inSet[m]&&d[m]===undefined){d[m]=d[j]+1;q.push(m)}}}
+  var maxd=1;for(k=0;k<n;k++)if((d[cells[k]]||0)>maxd)maxd=d[cells[k]];
+  for(k=0;k<n;k++){i=cells[k];type[i]=PUMP;pumpT0[i]=g.t;pumpDelay[i]=1.0*(d[i]||0)/maxd;g.pumps.push(i);sx+=i%C+.5;sy+=((i/C)|0)+.5}
+  var pay=n*CELL_VALUE;g.money+=pay;g.landCells+=n;g.stats.closures++;
+  if(g.stats.firstClose<0)g.stats.firstClose=g.t;
+  var cxm=sx/n,cym=sy/n;
+  g.texts.push({x:cxm,y:cym,s:'+€ '+pay,l:1.8,m:1.8,sub:n+' ha'});
+  g.rings.push({x:cxm,y:cym,l:1.3,m:1.3,r:Math.max(3,Math.sqrt(n)*.9)});
+  var coins=Math.min(26,6+Math.round(n/4));
+  for(k=0;k<coins;k++){var a=Math.random()*6.28,sp=2+Math.random()*4;spawn('coin',cxm,cym,Math.cos(a)*sp,Math.sin(a)*sp-2,.9+Math.random()*.5)}
+  log('polder '+n+' ha, +€'+pay);
+  if(navigator.vibrate){try{navigator.vibrate(n>60?[30,40,60]:25)}catch(e){}}
+  pop(pMoney);pop(pLand);updatePanel();
+}
+function pop(el){el.classList.add('pop');setTimeout(function(){el.classList.remove('pop')},180)}
+
+function update(dt){
+  var g=G;g.t+=dt;var car=g.car,moving=false,i;
+  if(active&&!g.laying&&g.t-g.penT0>.2)g.laying=true;
+  if(g.target){
+    var dx=g.target.x-car.x,dy=g.target.y-car.y,d=Math.sqrt(dx*dx+dy*dy);
+    if(d<.06)g.target=null;
+    else{
+      var want=Math.atan2(dy,dx),da=want-car.a;while(da>Math.PI)da-=6.2832;while(da<-Math.PI)da+=6.2832;
+      car.a+=da*Math.min(1,dt*14);
+      var step=Math.min(d,speed()*dt),n=Math.max(1,Math.ceil(step/.3)),sx=dx/d*step/n,sy=dy/d*step/n;
+      for(var k=0;k<n;k++){car.x+=sx;car.y+=sy;visit()}
+      moving=step>.0001;
+    }
+  }
+  g.moving=moving;
+  if(!g.target&&!active)g.laying=false;
+  i=idx(car.x,car.y);
+  if(i>=0&&type[i]===SAND&&g.load<cap()){
+    var before=g.load;g.load=Math.min(cap(),g.load+cap()/LOAD_TIME*dt);
+    if(before<=0&&g.load>0&&g.stats.firstLoad<0){g.stats.firstLoad=g.t;log('eerste zand geladen')}
+    if(g.load>=cap()&&!g.stats.loadedFull){g.stats.loadedFull=true;log('eerste volle lading')}
+    if(Math.random()<dt*30)spawn('sand',car.x,car.y-.3,(Math.random()-.5)*1.5,-1-Math.random(),.5);
+  }
+  if(g.dikeDirty){g.dikeDirty=false;checkEnclosure()}
+  if(moving){var onWater=i>=0&&(type[i]===SEA||type[i]===DIKE);g.foam+=dt*(onWater?26:0);
+    while(g.foam>=1){g.foam-=1;spawn('foam',car.x-Math.cos(car.a)*.9+(Math.random()-.5)*.5,car.y-Math.sin(car.a)*.9+(Math.random()-.5)*.5,0,0,.6)}}
+  // droogmalen afronden
+  for(var p=g.pumps.length-1;p>=0;p--){var pi=g.pumps[p];
+    if(g.t-pumpT0[pi]-pumpDelay[pi]>=PUMP_DUR){type[pi]=POLDER;g.pumps.splice(p,1)}}
+  // effecten
+  for(p=g.parts.length-1;p>=0;p--){var pt=g.parts[p];pt.l-=dt;if(pt.l<=0){g.parts.splice(p,1);continue}
+    pt.x+=pt.vx*dt;pt.y+=pt.vy*dt;if(pt.k==='sand')pt.vy+=6*dt;if(pt.k==='coin')pt.vy+=5*dt}
+  for(p=g.texts.length-1;p>=0;p--){var tx=g.texts[p];tx.l-=dt;tx.y-=dt*1.4;if(tx.l<=0)g.texts.splice(p,1)}
+  for(p=g.rings.length-1;p>=0;p--){var rg=g.rings[p];rg.l-=dt;if(rg.l<=0)g.rings.splice(p,1)}
+  updateHud(false);
+}
+
+/* ---------- tekenen ---------- */
+function render(){
+  var g=G,x,y,i,c,r,t;
+  cx.clearRect(0,0,W,H);
+  cx.drawImage(seaCv,0,0,W,H);
+  // golfjes
+  cx.lineWidth=Math.max(1,S*.12);
+  for(i=0;i<waves.length;i++){var w=waves[i],px=ox+((w.u+g.t*.004*w.s)%1)*C*S,py=oy+w.v*R*S,al=.12+.12*Math.sin(g.t*w.s*1.5+w.p);
+    cx.strokeStyle='rgba(255,255,255,'+al.toFixed(3)+')';cx.beginPath();cx.arc(px,py,S*.55,Math.PI*1.15,Math.PI*1.85);cx.stroke()}
+  // terrein
+  for(r=0;r<R;r++)for(c=0;c<C;c++){
+    i=r*C+c;t=type[i];if(t===SEA)continue;x=ox+c*S;y=oy+r*S;
+    if(t===LAND){
+      var shore=(c>0&&type[i-1]===SEA)||(c<C-1&&type[i+1]===SEA)||(r>0&&type[i-C]===SEA)||(r<R-1&&type[i+C]===SEA);
+      cx.fillStyle=shore?'#ecdca5':tint[i];cx.fillRect(x,y,S+.6,S+.6);
+    }else if(t===SAND){cx.fillStyle='#efcf74';cx.fillRect(x,y,S+.6,S+.6)}
+    else if(t===DIKE){
+      var age=(g.t-born[i])*8,k=age>=1?1:.5+.5*age,sz=S*k,off=(S-sz)/2;
+      cx.fillStyle='#a1703a';cx.fillRect(x+off,y+off,sz+.6,sz+.6);
+      cx.fillStyle='#d5a766';cx.fillRect(x+off,y+off,sz+.6,sz*.45);
+    }else if(t===PUMP){
+      var pr=clamp((g.t-pumpT0[i]-pumpDelay[i])/PUMP_DUR,0,1);
+      var sea=[seaR[i],seaG[i],seaB[i]],mud=[143,116,78],gr=[118,176,70];
+      cx.fillStyle=pr<.55?mix(sea,mud,pr/.55):mix(mud,gr,(pr-.55)/.45);cx.fillRect(x,y,S+.6,S+.6);
+    }else if(t===POLDER){
+      cx.fillStyle=(((c>>2)+(r>>2))&1)?'#76b648':'#6aa93d';cx.fillRect(x,y,S+.6,S+.6);
+    }
+  }
+  // zandput-label
+  cx.fillStyle='rgba(110,78,24,.85)';cx.font='800 '+Math.max(9,S*.8)+'px system-ui,sans-serif';cx.textAlign='center';cx.textBaseline='middle';
+  cx.fillText('ZANDPUT',ox+(bank.c+.5)*S,oy+(bank.r+.5)*S);
+  // ringen
+  for(i=0;i<g.rings.length;i++){var rg=g.rings[i],pr2=1-rg.l/rg.m;
+    cx.strokeStyle='rgba(255,255,255,'+(0.7*(1-pr2)).toFixed(3)+')';cx.lineWidth=S*.35;cx.beginPath();cx.arc(ox+rg.x*S,oy+rg.y*S,rg.r*S*(0.4+pr2*1.4),0,6.2832);cx.stroke()}
+  // deeltjes
+  for(i=0;i<g.parts.length;i++){var pt=g.parts[i],a=pt.l/pt.m,qx=ox+pt.x*S,qy=oy+pt.y*S;
+    if(pt.k==='sand'){cx.fillStyle='rgba(176,128,64,'+a.toFixed(2)+')';cx.fillRect(qx-S*.15,qy-S*.15,S*.3,S*.3)}
+    else if(pt.k==='foam'){cx.fillStyle='rgba(255,255,255,'+(a*.6).toFixed(2)+')';cx.beginPath();cx.arc(qx,qy,S*.22*(1.4-a*.6),0,6.2832);cx.fill()}
+    else{cx.fillStyle='rgba(255,208,60,'+Math.min(1,a*1.5).toFixed(2)+')';cx.strokeStyle='rgba(150,100,0,'+a.toFixed(2)+')';cx.lineWidth=1;cx.beginPath();cx.arc(qx,qy,S*.32,0,6.2832);cx.fill();cx.stroke()}}
+  drawCar();
+  // zwevende tekst
+  for(i=0;i<g.texts.length;i++){var tx=g.texts[i],ta=Math.min(1,tx.l/tx.m*1.6);
+    cx.globalAlpha=ta;cx.font='900 '+Math.max(16,S*1.7)+'px system-ui,sans-serif';cx.lineWidth=4;cx.strokeStyle='#17313b';cx.fillStyle='#fff6c8';
+    cx.strokeText(tx.s,ox+tx.x*S,oy+tx.y*S);cx.fillText(tx.s,ox+tx.x*S,oy+tx.y*S);
+    cx.font='800 '+Math.max(11,S*1.0)+'px system-ui,sans-serif';cx.lineWidth=3;cx.strokeText(tx.sub,ox+tx.x*S,oy+tx.y*S+S*1.6);cx.fillText(tx.sub,ox+tx.x*S,oy+tx.y*S+S*1.6);
+    cx.globalAlpha=1}
+  // doelstip
+  if(g.target){var tx2=ox+g.target.x*S,ty2=oy+g.target.y*S;cx.strokeStyle='rgba(255,255,255,.55)';cx.lineWidth=2;cx.beginPath();cx.arc(tx2,ty2,S*.6,0,6.2832);cx.stroke()}
+}
+function drawCar(){
+  var g=G,car=g.car,px=ox+car.x*S,py=oy+car.y*S,L=S*2.1,Wd=S*1.2;
+  cx.save();cx.translate(px,py);cx.rotate(car.a);
+  cx.fillStyle='rgba(0,0,0,.18)';cx.fillRect(-L/2+2,-Wd/2+3,L,Wd);
+  cx.fillStyle='#f0a030';cx.beginPath();if(cx.roundRect)cx.roundRect(-L/2,-Wd/2,L,Wd,S*.3);else cx.rect(-L/2,-Wd/2,L,Wd);cx.fill();
+  cx.fillStyle='#2b3a42';cx.fillRect(L*.12,-Wd*.34,L*.26,Wd*.68);
+  var f=cap()>0?g.load/cap():0;
+  cx.fillStyle='#8a6a33';cx.fillRect(-L*.42,-Wd*.32,L*.46,Wd*.64);
+  cx.fillStyle='#ecc96e';cx.fillRect(-L*.42,-Wd*.32,L*.46*clamp(f,0,1),Wd*.64);
+  cx.restore();
+  // laadbalk
+  var bw=S*3.2,bh=S*.5,bx=px-bw/2,by=py-S*1.7;
+  cx.fillStyle='rgba(23,49,59,.7)';cx.fillRect(bx-1.5,by-1.5,bw+3,bh+3);
+  cx.fillStyle='#ffd24a';cx.fillRect(bx,by,bw*clamp(f,0,1),bh);
+  cx.fillStyle='#fff';cx.font='800 '+Math.max(9,S*.6)+'px system-ui,sans-serif';cx.textAlign='center';cx.textBaseline='bottom';
+  cx.fillText(Math.floor(g.load)+'/'+cap(),px,by-2);
+}
+
+/* ---------- interface ---------- */
+function updateHud(force){
+  var g=G,m=Math.floor(g.money);
+  if(force||m!==g.shownMoney){g.shownMoney=m;elMoney.textContent='€ '+m;updatePanel(true)}
+  if(force||g.landCells!==g.shownLand){g.shownLand=g.landCells;elLand.textContent=g.landCells+' ha'}
+  var h=hintText();
+  if(h){elHint.textContent=h;elHint.classList.remove('off')}else elHint.classList.add('off');
+}
+function hintText(){
+  var s=G.stats;if(s.closures>0)return '';
+  if(s.firstLoad<0)return 'Tik of sleep om te rijden. Haal zand bij de zandput.';
+  if(s.firstDike<0)return 'Houd je vinger op het scherm en sleep over het water: zo leg je een dijk.';
+  return 'Sluit water af van de zee met een dijk van kust tot kust.';
+}
+function updatePanel(soft){
+  var g=G;
+  bCap.innerHTML='<b>Capaciteit</b><span>'+cap()+' → '+(cap()+CAP_STEP)+' dijkstukken</span><em>€ '+costCap()+'</em>';
+  bSpd.innerHTML='<b>Snelheid</b><span>×'+Math.pow(SPEED_GAIN,g.spdLv-1).toFixed(2)+' → ×'+Math.pow(SPEED_GAIN,g.spdLv).toFixed(2)+'</span><em>€ '+costSpd()+'</em>';
+  var cc=g.money>=costCap(),cs=g.money>=costSpd();
+  bCap.className=(cc?'can':'')+(cc&&g.stats.upgrades===0?' pulse':'');
+  bSpd.className=(cs?'can':'')+(cs&&g.stats.upgrades===0?' pulse':'');
+}
+function buy(kind){
+  var g=G,cost=kind==='cap'?costCap():costSpd();if(g.money<cost)return;
+  g.money-=cost;if(kind==='cap')g.capLv++;else g.spdLv++;g.stats.upgrades++;
+  log('upgrade '+kind+' voor €'+cost);updateHud(true);
+}
+bCap.addEventListener('click',function(){buy('cap')});
+bSpd.addEventListener('click',function(){buy('spd')});
+
+var active=false;
+function setTarget(e,isDown){
+  var wx=clamp((e.clientX-ox)/S,.5,C-.5),wy=clamp((e.clientY-oy)/S,.5,R-.5);
+  var car=G.car;
+  if(isDown&&Math.hypot(wx-car.x,wy-car.y)<1.3){G.target=null;return}
+  G.target={x:wx,y:wy};
+}
+cv.addEventListener('pointerdown',function(e){e.preventDefault();active=true;G.penT0=G.t;G.laying=false;try{cv.setPointerCapture(e.pointerId)}catch(_){}setTarget(e,true)});
+cv.addEventListener('pointermove',function(e){if(active)setTarget(e,false)});
+cv.addEventListener('pointerup',function(){active=false});
+cv.addEventListener('pointercancel',function(){active=false});
+cv.addEventListener('contextmenu',function(e){e.preventDefault()});
+
+/* verborgen testoverzicht: 5x tikken op "Collector 0.2" */
+var verTaps=[];
+pMoney.style.pointerEvents='auto';
+pMoney.addEventListener('click',function(){
+  var now=Date.now();verTaps=verTaps.filter(function(t){return now-t<2500});verTaps.push(now);
+  if(verTaps.length>=5){verTaps=[];showDbg()}
+});
+function fmt(t){return t<0?'-':t.toFixed(1)+'s'}
+function showDbg(){
+  var s=G.stats,lines=['COLLECTOR 0.2 - testoverzicht','','speeltijd: '+fmt(G.t),'eerste zand: '+fmt(s.firstLoad),'eerste dijkstuk: '+fmt(s.firstDike),'eerste polder: '+fmt(s.firstClose),
+    'polders: '+s.closures,'dijkstukken: '+s.dikeCells,'upgrades: '+s.upgrades,'geld: €'+Math.floor(G.money),'land: '+G.landCells+' ha','','tijdlijn:'];
+  G.log.forEach(function(l){lines.push('  '+fmt(l.t)+'  '+l.s)});
+  dbg.innerHTML='<pre style="white-space:pre-wrap;margin:0">'+lines.join('\n')+'</pre><button id="dClose">Sluiten</button><button id="dNew">Nieuw spel</button>';
+  dbg.style.display='block';
+  document.getElementById('dClose').onclick=function(){dbg.style.display='none'};
+  document.getElementById('dNew').onclick=function(){dbg.style.display='none';newGame()};
+}
+
+/* ---------- lus ---------- */
+function frame(ts){
+  var dt=Math.min(.05,(ts-last)/1000||.016);last=ts;
+  update(dt);render();requestAnimationFrame(frame);
+}
+window.addEventListener('resize',function(){layout()});
+layout();
+if(!started){started=true;requestAnimationFrame(function(ts){last=ts;frame(ts)})}
+
+/* testhaak voor automatische tests */
+window.__collector={
+  get G(){return G},get type(){return type},get dims(){return{C:C,R:R,S:S,ox:ox,oy:oy}},bank:bank,
+  topRow:function(c){return Math.round(topRowF(c))},
+  advance:function(sec){var n=Math.round(sec*60);for(var i=0;i<n;i++)update(1/60);render()},
+  setTarget:function(x,y,lay){G.target={x:x,y:y};G.laying=!!lay},newGame:newGame,buy:buy,cap:cap,speed:speed,
+  constants:{START_CAP:START_CAP,CAP_STEP:CAP_STEP,CELL_VALUE:CELL_VALUE}
+};
+})();
+</script>
+</body>
+</html>
